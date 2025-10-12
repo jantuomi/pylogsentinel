@@ -38,10 +38,10 @@ pip install pylogsentinel
    chmod 600 /etc/pylogsentinel.conf
    ```
 2. Edit paths, rules, and actions to your needs.
-3. Add a cron entry (run every minute):
+3. First build state without executing actions (initial run with --skip-actions):
 
    ```
-   * * * * * /usr/bin/env python3 -m pylogsentinel -c /etc/pylogsentinel.conf
+   python -m pylogsentinel -c /etc/pylogsentinel.conf --skip-actions
    ```
 
    If you omit the `-c` option (or the specified file does not exist), pylogsentinel will look for a configuration file in this order:
@@ -50,9 +50,10 @@ pip install pylogsentinel
    - `/etc/pylogsentinel.conf`
    - `/usr/local/etc/pylogsentinel.conf`.
 
-4. First build state without executing actions (initial run with --skip-actions):
+4. Add a cron entry (run every minute):
+
    ```
-   python -m pylogsentinel -c /etc/pylogsentinel.conf --skip-actions
+   * * * * * /usr/bin/env python3 -m pylogsentinel -c /etc/pylogsentinel.conf
    ```
 
 ## Configuration File Reference
