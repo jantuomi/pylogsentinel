@@ -14,7 +14,7 @@ Key features:
 - Lock file to prevent concurrent execution using same state directory.
 - Safe state persistence per log inode (coping with rotation/truncation).
 - Environment variable expansion for action shell commands.
-- Optional dry-run mode for testing (no commands executed).
+- Optional --skip-actions mode (processes new data but suppresses action execution).
 
 Only Python standard library modules are used.
 """
@@ -514,13 +514,13 @@ def generate_matches(
 def execute_action(
     action: Action,
     event: MatchEvent,
-    dry_run: bool = False,
+    skip_actions: bool = False,
     env_overrides: dict[str, str] | None = None,
 ) -> int:
     """
     Execute an action shell command with appropriate environment.
 
-    Returns the process exit code (0 on dry-run).
+    Returns the process exit code (0 when actions are skipped).
     """
     env = os.environ.copy()
     env.update(
@@ -536,11 +536,10 @@ def execute_action(
     if env_overrides:
         env.update(env_overrides)
 
-    if dry_run:
+    if skip_actions:
         print(
-            f"[dry-run] Would execute action {action.action_id!r} for rule "
-            f"{event.rule.rule_id!r} on {event.file_path}:{event.line_number}\n"
-            f"Command: {action.cmd}\n",
+            f"[skip-actions] Would execute action {action.action_id!r} for rule "
+            f"{event.rule.rule_id!r} on {event.file_path}:{event.line_number}, cmd: {action.cmd}",
             file=sys.stderr,
         )
         return 0
@@ -576,7 +575,7 @@ class Sentinel:
     actions: dict[str, Action]
     max_block_size: int
     state_dir: str
-    dry_run: bool
+    skip_actions: bool
     state_manager: "StateManager"
 
     def __init__(
@@ -586,14 +585,14 @@ class Sentinel:
         actions: dict[str, Action],
         max_block_size: int,
         state_dir: str,
-        dry_run: bool = False,
+        skip_actions: bool = False,
     ) -> None:
         self.log_paths = log_paths
         self.rules = rules
         self.actions = actions
         self.max_block_size = max_block_size
         self.state_dir = state_dir
-        self.dry_run = dry_run
+        self.skip_actions = skip_actions
         self.state_manager = StateManager(state_dir)
 
     def ensure_state_dir(self) -> None:
@@ -633,7 +632,7 @@ class Sentinel:
             file_path, lines, prev_line_no, self.rules, CONTEXT_RADIUS
         ):
             action = self.actions.get(event.rule.action_id) or self.actions["default"]
-            execute_action(action, event, dry_run=self.dry_run)
+            execute_action(action, event, skip_actions=self.skip_actions)
 
         self.state_manager.save(inode, new_offset, new_last_line_no)
 
@@ -651,8 +650,8 @@ class Sentinel:
                 print("INFO: No files to process", file=sys.stderr)
                 return 0
             for path in files:
-                if self.dry_run:
-                    print(f"[dry-run] Scanning {path}", file=sys.stderr)
+                if self.skip_actions:
+                    print(f"[skip-actions] Scanning {path}", file=sys.stderr)
                 self.process_file(path)
         return 0
 
@@ -663,16 +662,16 @@ def parse_args(argv: Sequence[str]) -> tuple[str, bool]:
 
     Supported:
         -c/--config PATH
-        --dry-run
+        --skip-actions
         -h/--help
     """
     config_path = DEFAULT_CONFIG_PATH
-    dry_run = False
+    skip_actions = False
     it = iter(enumerate(argv))
     for _, arg in it:
         if arg in ("-h", "--help"):
             print(
-                "Usage: pylogsentinel [-c CONFIG] [--dry-run]\n"
+                "Usage: pylogsentinel [-c CONFIG] [--skip-actions]\n"
                 "Environment variables may be referenced in action commands.\n",
                 file=sys.stderr,
             )
@@ -683,12 +682,12 @@ def parse_args(argv: Sequence[str]) -> tuple[str, bool]:
             except StopIteration:
                 raise SystemExit("ERROR: -c/--config requires a value")
             config_path = value
-        elif arg == "--dry-run":
-            dry_run = True
+        elif arg == "--skip-actions":
+            skip_actions = True
         else:
             # Unrecognized argument
             raise SystemExit(f"ERROR: Unrecognized argument: {arg}")
-    return config_path, dry_run
+    return config_path, skip_actions
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -698,7 +697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     try:
-        config_path, dry_run = parse_args(list(argv))
+        config_path, skip_actions = parse_args(list(argv))
         # If the provided (or default) config path does not exist, attempt standard locations.
         if not os.path.isfile(config_path):
             for cand in (
@@ -724,16 +723,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             actions=actions,
             max_block_size=max_block_size,
             state_dir=state_dir,
-            dry_run=dry_run,
+            skip_actions=skip_actions,
         )
-        if dry_run:
-            print(f"[dry-run] Using config: {config_path}", file=sys.stderr)
-            print(f"[dry-run] Log path entries: {len(log_paths)}", file=sys.stderr)
+        if skip_actions:
+            print(f"[skip-actions] Using config: {config_path}", file=sys.stderr)
+            print(f"[skip-actions] Log path entries: {len(log_paths)}", file=sys.stderr)
             print(
-                f"[dry-run] Rules: {', '.join(sorted(rules.keys()))}", file=sys.stderr
+                f"[skip-actions] Rules: {', '.join(sorted(rules.keys()))}",
+                file=sys.stderr,
             )
             print(
-                f"[dry-run] Actions: {', '.join(sorted(actions.keys()))}",
+                f"[skip-actions] Actions: {', '.join(sorted(actions.keys()))}",
                 file=sys.stderr,
             )
         return sentinel.run()

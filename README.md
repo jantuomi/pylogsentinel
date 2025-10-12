@@ -18,7 +18,7 @@ previous run (tracked per-file, per-inode) and then exits.
 - Reliable state tracking via inode-based files (`<inode>` in `state_dir`).
 - Safe handling of truncation & rotation (offset reset if file shrinks).
 - Strict lock file (`LOCK`) prevents concurrent overlapping runs.
-- Dry-run mode (`--dry-run`) to test rule matching without executing actions.
+- Skip-actions mode (`--skip-actions`) processes new data but skips executing actions (use on the first run to avoid firing on historical log lines).
 - Human-friendly size option for `max_block_size` (e.g. `512K`, `10M`).
 - Automatic configuration file discovery when -c/--config is not supplied.
 - Directory path monitoring uses the system 'file' command; only paths whose description contains 'text' are monitored (explicit file paths are always processed).
@@ -50,9 +50,9 @@ pip install pylogsentinel
    - `/etc/pylogsentinel.conf`
    - `/usr/local/etc/pylogsentinel.conf`.
 
-4. Verify operation (first in dry-run mode):
+4. First build state without executing actions (initial run with --skip-actions):
    ```
-   python -m pylogsentinel -c /etc/pylogsentinel.conf --dry-run
+   python -m pylogsentinel -c /etc/pylogsentinel.conf --skip-actions
    ```
 
 ## Configuration File Reference
@@ -69,7 +69,7 @@ paths = /var/log /custom/app/logs/app.log
 cmd = find /var/log -type f -name '*.log'
 
 [action.default]
-cmd = echo "Matched $RULE_ID in $FILE at line $LINE" | mail -s "Sentinel alert" root
+cmd = echo -e "Matched $RULE_ID in $FILE at line $LINE, context:\n\n$CONTEXT" | mail -s "Sentinel alert" root
 
 [action.another]
 cmd = echo "Another action"
@@ -159,7 +159,7 @@ A lock file named `LOCK` in `state_dir` prevents overlapping runs. If it exists 
 
 ## Dry Run
 
-`--dry-run` scans and shows which actions would run without executing them.
+`--skip-actions` processes new data but does not run the actions (recommended for the very first run to prevent alert storms from historical data).
 
 ## Exit Codes
 
