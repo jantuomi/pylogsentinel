@@ -60,6 +60,7 @@ pip install pylogsentinel
 The configuration is an INI-style file. An example:
 
 ```
+[system]
 state_dir = /var/run/pylogsentinel
 max_block_size = 10M
 
