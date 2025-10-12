@@ -1,6 +1,6 @@
 [project]
 name = "pylogsentinel"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lightweight cron-friendly log monitoring utility with regex rules and per-rule shell actions"
 readme = "README.md"
 requires-python = ">=3.9"
