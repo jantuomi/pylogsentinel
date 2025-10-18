@@ -12,7 +12,7 @@ previous run (tracked per-file, per-inode) and then exits.
 ## Key Features
 
 - INI-style configuration (`pylogsentinel.conf`).
-- Two log discovery modes: static paths or shell command
+- Multiple named log sets (e.g. [logs.default], [logs.errors]) with per-set discovery via static paths or shell command
 - Per-rule regular expressions with optional flags (`/pattern/i` style).
 - Per-rule or actions executed as shell commands with rich contextual environment variables.
 - Reliable state tracking via inode-based files (`<inode>` in `state_dir`).
@@ -65,9 +65,10 @@ The configuration is an INI-style file. An example:
 state_dir = /var/run/pylogsentinel
 max_block_size = 10M
 
-[logs]
-# Choose exactly one, `paths` or `cmd`:
+[logs.default]
 paths = /var/log /custom/app/logs/app.log
+
+[logs.other]
 cmd = find /var/log -type f -name '*.log'
 
 [action.default]
@@ -79,7 +80,8 @@ cmd = echo "Another action"
 [rule.error]
 description = Error-like conditions
 pattern = /(error|fatal|exception|kill|crash)/i
-action = another # if omitted, use default action
+action = another
+logs = default other
 ```
 
 ### `[system]` Section
@@ -89,22 +91,23 @@ action = another # if omitted, use default action
 | `state_dir`      | Yes      | Directory storing lock + per-inode state files. Must be writable. (Defined under `[system]`.)           | (none)  |
 | `max_block_size` | No       | Maximum newly appended bytes to read per file per run. Supports suffixes `K`, `M`, `G` (in `[system]`). | `10M`   |
 
-### `[logs]` Section
+### Log Sets (`[logs.<id>]`)
 
-Supply **either**:
+Define one or more log sets; each `[logs.<id>]` specifies exactly one of `paths` or `cmd`. The default set must be named `[logs.default]`. A bare `[logs]` section is not allowed.
 
-- `paths`: Space-separated list of file and/or directory paths. Directories are traversed recursively; only files whose `file -b` output contains the substring "text" are monitored (others are skipped). Explicit file paths are always processed.
-- `cmd`: A shell command producing **one path per line** on stdout.
+- `paths`: Space-separated file and/or directory paths. Directories are traversed recursively; only files whose `file -b` output contains 'text' are monitored. Explicit file paths are always processed.
+- `cmd`: Shell command producing one path per line on stdout.
 
-Exactly one must be present. If using `cmd`, ensure it returns relatively quickly (recommended under a second) as it executes on every run.
+Rules may reference multiple log sets using a whitespace-separated `logs` field.
 
 ### `[rule.<rule_id>]` Sections
 
-| Field         | Required | Description                                                                                                    |
-| ------------- | -------- | -------------------------------------------------------------------------------------------------------------- |
-| `pattern`     | Yes      | Regular expression in the mandatory form `/pattern/flags` (flags optional). Supported flags: `i` (IGNORECASE). |
-| `description` | No       | Human-readable description for environment variable `RULE_DESCRIPTION`.                                        |
-| `action`      | No       | The `action_id` to invoke. Defaults to `default` if omitted.                                                   |
+| Field         | Required | Description                                                                                                |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `pattern`     | Yes      | Regular expression in `/pattern/flags` form. Supported flag: `i` (IGNORECASE).                             |
+| `description` | No       | Human-readable description for environment variable `RULE_DESCRIPTION`.                                    |
+| `action`      | No       | Action id to invoke; defaults to `default` if omitted.                                                     |
+| `logs`        | No       | Whitespace-separated list of log set ids (e.g. `default errors access`). Defaults to `default` if omitted. |
 
 At least one rule is required.
 

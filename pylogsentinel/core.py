@@ -35,8 +35,8 @@ import time
 
 DEFAULT_CONFIG_PATH = "pylogsentinel.conf"
 LOCK_FILENAME = "LOCK"
-DEFAULT_MAX_BLOCK_SIZE = 10 * 1024 * 1024  # 10 MiB
-CONTEXT_RADIUS = 2  # lines before and after a match to include in CONTEXT
+DEFAULT_MAX_BLOCK_SIZE = 10 * 1024 * 1024
+CONTEXT_RADIUS = 5
 
 
 class ConfigError(Exception):
@@ -54,8 +54,10 @@ class Rule:
     rule_id: str
     pattern: str
     description: str
-    action_id: str  # may reference "default"
+    action_id: str
     compiled: re.Pattern[str]
+    log_set_ids: list[str]
+    log_base_paths: list[str]
 
 
 @dataclass
@@ -97,7 +99,7 @@ def parse_size(value: str) -> int:
 
 
 _FLAG_MAP = {
-    "i": re.IGNORECASE,  # only supported flag
+    "i": re.IGNORECASE,
 }
 
 
@@ -135,10 +137,10 @@ def load_config(
     path: str,
 ) -> tuple[list[str], dict[str, Rule], dict[str, Action], int, str]:
     """
-    Load and validate configuration.
+    Load and validate configuration supporting multiple log sets.
 
     Returns:
-        (log_paths (may contain directories),
+        (all_log_paths (union of all log set base paths),
          rules mapping,
          actions mapping,
          max_block_size,
@@ -162,50 +164,58 @@ def load_config(
     if max_block_size <= 0:
         raise ConfigError("max_block_size must be positive")
 
-    # Logs section
-    if not parser.has_section("logs"):
-        raise ConfigError("Missing [logs] section")
-    log_cmd = parser.get("logs", "cmd", fallback=None)
-    log_paths_raw = parser.get("logs", "paths", fallback=None)
-    if log_cmd and log_paths_raw:
-        raise ConfigError("Specify only one of [logs].cmd or [logs].paths")
-    if not log_cmd and not log_paths_raw:
-        raise ConfigError("Must specify one of [logs].cmd or [logs].paths")
+    log_sets: dict[str, list[str]] = {}
 
-    log_paths: list[str]
-    if log_paths_raw:
-        log_paths = [
-            os.path.expanduser(os.path.expandvars(p))
-            for p in log_paths_raw.split()
-            if p
-        ]
-    else:
-        # Run discovery command (log_cmd validated above)
-        assert log_cmd is not None and log_cmd.strip(), (
-            "internal: log_cmd unexpectedly None/empty"
+    for section in parser.sections():
+        if section.startswith("logs."):
+            log_set_id = section[len("logs.") :]
+        else:
+            continue
+
+        cmd = parser.get(section, "cmd", fallback=None)
+        paths_raw = parser.get(section, "paths", fallback=None)
+        if cmd and paths_raw:
+            raise ConfigError(f"Specify only one of cmd or paths in [{section}]")
+        if not cmd and not paths_raw:
+            raise ConfigError(f"Must specify cmd or paths in [{section}]")
+
+        if paths_raw:
+            paths = [
+                os.path.expanduser(os.path.expandvars(p))
+                for p in paths_raw.split()
+                if p
+            ]
+        else:
+            assert cmd is not None
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    shell=True,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except OSError as e:
+                raise ConfigError(
+                    f"Failed to run log discovery cmd in [{section}]: {e}"
+                ) from e
+            if proc.returncode != 0:
+                raise ConfigError(
+                    f"Log discovery command failed ({proc.returncode}) in [{section}]: {cmd}\n{proc.stderr}"
+                )
+            paths = [
+                os.path.expanduser(os.path.expandvars(line.strip()))
+                for line in proc.stdout.splitlines()
+                if line.strip()
+            ]
+        log_sets[log_set_id] = paths
+
+    if not log_sets:
+        raise ConfigError(
+            "No log sets defined (need at least one [logs.<id>] section, e.g. [logs.default])"
         )
-        try:
-            proc = subprocess.run(
-                log_cmd,  # type: ignore[arg-type]  # narrowed by assert for type checkers
-                shell=True,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except OSError as e:
-            raise ConfigError(f"Failed to run logs cmd: {e}") from e
-        if proc.returncode != 0:
-            raise ConfigError(
-                f"Log discovery command failed ({proc.returncode}): {log_cmd}\n{proc.stderr}"
-            )
-        log_paths = [
-            os.path.expanduser(os.path.expandvars(line.strip()))
-            for line in proc.stdout.splitlines()
-            if line.strip()
-        ]
 
-    # Parse actions
     actions: dict[str, Action] = {}
     for section in parser.sections():
         if section.startswith("action."):
@@ -218,7 +228,6 @@ def load_config(
     if "default" not in actions:
         raise ConfigError("Missing [action.default] section (mandatory default action)")
 
-    # Parse rules
     rules: dict[str, Rule] = {}
     for section in parser.sections():
         if section.startswith("rule."):
@@ -234,19 +243,48 @@ def load_config(
                 raise ConfigError(
                     f"Rule {rule_id!r} references unknown action {action_id!r}"
                 )
+            logs_field = parser.get(section, "logs", fallback=None)
+            if not logs_field:
+                logs_ids = ["default"]
+            else:
+                logs_ids = [tok for tok in logs_field.split() if tok]
+            if not logs_ids:
+                raise ConfigError(f"Rule {rule_id!r} has empty logs list")
+            for lid in logs_ids:
+                if lid not in log_sets:
+                    raise ConfigError(
+                        f"Rule {rule_id!r} references unknown log set {lid!r}"
+                    )
             normalized, compiled = _compile_pattern(pattern_raw)
+            combined_paths: list[str] = []
+            _seen_paths: set[str] = set()
+            for lid in logs_ids:
+                for p in log_sets[lid]:
+                    if p not in _seen_paths:
+                        _seen_paths.add(p)
+                        combined_paths.append(p)
             rules[rule_id] = Rule(
                 rule_id=rule_id,
                 pattern=normalized,
                 description=description,
                 action_id=action_id,
                 compiled=compiled,
+                log_set_ids=logs_ids,
+                log_base_paths=combined_paths,
             )
 
     if not rules:
         raise ConfigError("No rules defined (need at least one [rule.*] section)")
 
-    return log_paths, rules, actions, max_block_size, state_dir
+    all_log_paths: list[str] = []
+    seen: set[str] = set()
+    for paths in log_sets.values():
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                all_log_paths.append(p)
+
+    return all_log_paths, rules, actions, max_block_size, state_dir
 
 
 class LockFile:
@@ -394,24 +432,23 @@ def discover_files(paths: list[str]) -> Iterator[str]:
     def _is_text(path: str) -> bool:
         try:
             proc = subprocess.run(
-                ["file", "-b", path],  # type: ignore[arg-type]  # pyright: acceptable sequence of str
+                ["file", "-b", path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 check=False,
             )
             if proc.returncode != 0:
-                return True  # permissive fallback
+                return True
             desc = proc.stdout.lower()
             return "text" in desc
         except Exception:
-            return True  # permissive fallback on unexpected errors
+            return True
 
     for p in paths:
         if not p:
             continue
         if os.path.isfile(p):
-            # Explicit file path: yield directly
             yield p
         elif os.path.isdir(p):
             for root, _, files in os.walk(p):
@@ -445,7 +482,6 @@ def read_new_lines(
             fh.seek(0, os.SEEK_END)
             file_size = fh.tell()
             if file_size < start_offset:
-                # Truncated
                 start_offset = 0
                 start_line_number = 0
             fh.seek(start_offset)
@@ -456,7 +492,6 @@ def read_new_lines(
                     break
                 bytes_read += len(line_bytes)
                 if bytes_read > max_block_size:
-                    # Do not include this partial line; rewind to before line.
                     bytes_read -= len(line_bytes)
                     break
                 try:
@@ -490,18 +525,26 @@ def generate_matches(
 ) -> Iterator[MatchEvent]:
     """
     Iterate over lines and yield MatchEvent objects for each rule match.
+    A rule is only applied if the file belongs to its configured log set
+    (file path equal to or under one of the set's base paths).
     """
     total_lines = len(lines)
     for idx, line in enumerate(lines):
         absolute_line_number = initial_line_number + idx + 1
         for rule in rules.values():
+            applies = False
+            for base in rule.log_base_paths:
+                b = base.rstrip(os.sep)
+                if file_path == b or file_path.startswith(b + os.sep):
+                    applies = True
+                    break
+            if not applies:
+                continue
             m = rule.compiled.search(line)
             if not m:
                 continue
-            # Build context
             start_ctx = max(0, idx - context_radius)
-            end_ctx = min(total_lines, idx + context_radius + 1)
-            context = "".join(lines[start_ctx:end_ctx])
+            context = "".join(lines[start_ctx : idx + 1])
             yield MatchEvent(
                 rule=rule,
                 file_path=file_path,
@@ -545,7 +588,7 @@ def execute_action(
         return 0
 
     try:
-        proc = subprocess.run(  # type: ignore
+        proc = subprocess.run(
             action.cmd,
             shell=True,
             env=env,
@@ -599,7 +642,6 @@ class Sentinel:
         try:
             os.makedirs(self.state_dir, exist_ok=True)
         except OSError as e:
-            # Explicit error output before failing; re-raise original exception
             print(
                 f"ERROR: Failed to create state_dir '{self.state_dir}': {e}",
                 file=sys.stderr,
@@ -625,7 +667,6 @@ class Sentinel:
             file_path, prev_offset, prev_line_no, self.max_block_size
         )
         if not lines:
-            # No new content OR failed to read
             return
 
         for event in generate_matches(
@@ -685,7 +726,6 @@ def parse_args(argv: Sequence[str]) -> tuple[str, bool]:
         elif arg == "--skip-actions":
             skip_actions = True
         else:
-            # Unrecognized argument
             raise SystemExit(f"ERROR: Unrecognized argument: {arg}")
     return config_path, skip_actions
 
@@ -698,18 +738,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
     try:
         config_path, skip_actions = parse_args(list(argv))
-        # If the provided (or default) config path does not exist, attempt standard locations.
+        candidates = [
+            config_path,
+            os.path.expanduser("~/.pylogsentinel.conf"),
+            os.path.expanduser("~/.config/pylogsentinel.conf"),
+            "/etc/pylogsentinel.conf",
+            "/usr/local/etc/pylogsentinel.conf",
+        ]
         if not os.path.isfile(config_path):
-            for cand in (
-                os.path.expanduser("~/.pylogsentinel.conf"),
-                os.path.expanduser("~/.config/pylogsentinel.conf"),
-                "/etc/pylogsentinel.conf",
-                "/usr/local/etc/pylogsentinel.conf",
-                config_path,  # fallback original (may still not exist)
-            ):
+            for cand in candidates[1:]:
                 if os.path.isfile(cand):
                     config_path = cand
                     break
+        if not os.path.isfile(config_path):
+            print(
+                "CONFIG ERROR: No configuration file found (searched: "
+                + ", ".join(candidates)
+                + ")",
+                file=sys.stderr,
+            )
+            return 2
         (
             log_paths,
             rules,
@@ -727,7 +775,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if skip_actions:
             print(f"[skip-actions] Using config: {config_path}", file=sys.stderr)
-            print(f"[skip-actions] Log path entries: {len(log_paths)}", file=sys.stderr)
+            print(
+                f"[skip-actions] Log path entries (union): {len(log_paths)}",
+                file=sys.stderr,
+            )
             print(
                 f"[skip-actions] Rules: {', '.join(sorted(rules.keys()))}",
                 file=sys.stderr,
