@@ -1,15 +1,15 @@
 [project]
 name = "pylogsentinel"
-version = "0.3.0"
+version = "0.3.1"
 description = "Lightweight cron-friendly log monitoring utility with regex rules and per-rule shell actions"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
-license = "MIT"
 authors = [
   { name = "Jan Tuomi", email = "jan@jantuomi.fi" }
 ]
 keywords = ["log", "monitoring", "regex", "cron", "alerting", "sentinel"]
+license = {text = "MIT"}
 
 [project.urls]
 Homepage = "https://github.com/jantuomi/pylogsentinel"
