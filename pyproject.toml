@@ -1,9 +1,9 @@
 [project]
 name = "pylogsentinel"
-version = "0.3.1"
+version = "0.3.2"
 description = "Lightweight cron-friendly log monitoring utility with regex rules and per-rule shell actions"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = []
 authors = [
   { name = "Jan Tuomi", email = "jan@jantuomi.fi" }
@@ -15,3 +15,7 @@ license = {text = "MIT"}
 Homepage = "https://github.com/jantuomi/pylogsentinel"
 Repository = "https://github.com/jantuomi/pylogsentinel.git"
 Issues = "https://github.com/jantuomi/pylogsentinel/issues"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
